@@ -17,9 +17,8 @@ namespace TestConsoleApp
         static async Task Main(string[] args)
         {
 
-            var config = new RedisClientConfig(TestInformation.Host,
-                TestInformation.Port,
-                TestInformation.Password) {Ssl = true};
+            var config = new RedisClientConfig("localhost", 6379);
+
 
             _redisManager = new RedisClientManager(config, 1);
 
@@ -30,13 +29,13 @@ namespace TestConsoleApp
 
             var tasks = new List<Task>();
 
-            for (var taskCount = 0; taskCount < 50; taskCount++)
+            for (var taskCount = 0; taskCount < 1; taskCount++)
             {
                 var task = Task.Run(async () =>
                 {
                     var tomLonghurstRedisClientStopwatch = Stopwatch.StartNew();
 
-                    for (var i = 0; i < 200; i++)
+                    for (var i = 0; i < 1; i++)
                     {
                         var redisValue = await (await TomLonghurstRedisClient).StringGetAsync("SingleKey");
                     }

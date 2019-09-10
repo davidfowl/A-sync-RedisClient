@@ -78,7 +78,7 @@ namespace TomLonghurst.RedisClient.Extensions
                 throw new RedisDataException("Can't find EOL");
             }
 
-            pipeReader.AdvanceTo(endOfLinePosition.Value, readResult.Buffer.End);
+            pipeReader.AdvanceTo(endOfLinePosition.Value);
 
             return readResult;
         }

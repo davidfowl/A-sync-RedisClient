@@ -1,10 +1,12 @@
 using System;
 using System.Buffers;
+using System.Buffers.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Threading.Tasks;
 using TomLonghurst.RedisClient.Exceptions;
 using TomLonghurst.RedisClient.Extensions;
@@ -22,7 +24,7 @@ namespace TomLonghurst.RedisClient.Models
         private Client.RedisClient _redisClient;
         protected ReadResult ReadResult;
         protected IDuplexPipe Pipe;
-        
+
         public IRedisCommand LastCommand
         {
             get => _redisClient.LastCommand;
@@ -44,16 +46,146 @@ namespace TomLonghurst.RedisClient.Models
         internal async ValueTask<T> Start(Client.RedisClient redisClient, IDuplexPipe pipe)
         {
             SetMembers(redisClient, pipe);
-            
+
             if (!Pipe.Input.TryRead(out ReadResult))
             {
                 ReadResult = await Pipe.Input.ReadAsync().ConfigureAwait(false);
             }
-            
+
             return await Process();
         }
-        
+
         private protected abstract ValueTask<T> Process();
+
+        protected async ValueTask<ReadOnlySequence<byte>> ReadData2()
+        {
+            var buffer = ReadResult.Buffer;
+
+            if (buffer.IsEmpty && ReadResult.IsCompleted)
+            {
+                throw new UnexpectedRedisResponseException("Zero Length Response from Redis");
+            }
+
+            var line = await ReadLine2();
+
+            if (line.IsEmpty)
+            {
+                throw new RedisDataException("No data to process");
+            }
+            var firstChar = line.First.Span[0];
+
+            if (firstChar == (byte)'-')
+            {
+                throw new RedisFailedCommandException(Encoding.UTF8.GetString(line.ToArray()), LastCommand);
+            }
+
+            if (firstChar == '$')
+            {
+                // TODO: 
+                //if (line.Length "$-1")
+                //{
+                //    return default;
+                //}
+
+                //LastAction = "Reading Data Synchronously in ReadData";
+                //if (!Pipe.Input.TryRead(out ReadResult))
+                //{
+                //    LastAction = "Reading Data Asynchronously in ReadData";
+                //    ReadResult = await Pipe.Input.ReadAsync().ConfigureAwait(false);
+                //}
+
+                // buffer = ReadResult.Buffer;
+                var sizeBuf = new byte[line.Length];
+                line.Slice(1).CopyTo(sizeBuf);
+                if (!Utf8Parser.TryParse(sizeBuf, out long byteSizeOfData, out _))
+                {
+                    throw new UnexpectedRedisResponseException("Invalid length");
+                }
+
+                Pipe.Input.AdvanceTo(line.End);
+
+                while (true)
+                {
+                    ReadResult = await Pipe.Input.ReadAsync();
+                    var data = ReadResult.Buffer;
+
+                    if (data.Length < byteSizeOfData)
+                    {
+                        Pipe.Input.AdvanceTo(ReadResult.Buffer.Start, ReadResult.Buffer.End);
+                    }
+                    else
+                    {
+                        break;
+                    }
+
+                    if (ReadResult.IsCompleted)
+                    {
+                        break;
+                    }
+                }
+
+                if (ReadResult.Buffer.Length < byteSizeOfData)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                //var bytes = new byte[byteSizeOfData].AsMemory();
+
+                //buffer = buffer.Slice(0, Math.Min(byteSizeOfData, buffer.Length));
+
+                //var bytesReceived = buffer.Length;
+
+                //buffer.CopyTo(bytes.Slice(0, (int)bytesReceived).Span);
+
+                //Pipe.Input.AdvanceTo(buffer.End);
+
+                //while (bytesReceived < byteSizeOfData)
+                //{
+                //    LastAction = "Advancing Buffer in ReadData Loop";
+
+                //    if ((ReadResult.IsCompleted || ReadResult.IsCanceled) && ReadResult.Buffer.IsEmpty)
+                //    {
+                //        break;
+                //    }
+
+                //    LastAction = "Reading Data Synchronously in ReadData Loop";
+                //    if (!Pipe.Input.TryRead(out ReadResult))
+                //    {
+                //        LastAction = "Reading Data Asynchronously in ReadData Loop";
+                //        ReadResult = await Pipe.Input.ReadAsync().ConfigureAwait(false);
+                //    }
+
+                //    buffer = ReadResult.Buffer.Slice(0,
+                //        Math.Min(ReadResult.Buffer.Length, byteSizeOfData - bytesReceived));
+
+                //    buffer
+                //        .CopyTo(bytes.Slice((int)bytesReceived,
+                //            (int)Math.Min(buffer.Length, byteSizeOfData - bytesReceived)).Span);
+
+                //    bytesReceived += buffer.Length;
+
+                //    Pipe.Input.AdvanceTo(buffer.End);
+                //}
+
+                //if (ReadResult.IsCompleted && ReadResult.Buffer.IsEmpty)
+                //{
+                //    return bytes;
+                //}
+
+                //if (!Pipe.Input.TryRead(out ReadResult))
+                //{
+                //    LastAction = "Reading Data Asynchronously in ReadData Loop";
+                //    ReadResult = await Pipe.Input.ReadAsync().ConfigureAwait(false);
+                //}
+
+                //await Pipe.Input.AdvanceToLineTerminator(ReadResult);
+
+                //return bytes;
+
+            }
+
+            throw new UnexpectedRedisResponseException($"Unexpected reply: {line}");
+        }
 
         //[MethodImpl(MethodImplOptions.AggressiveInlining)]
         protected async ValueTask<Memory<byte>> ReadData()
@@ -103,7 +235,7 @@ namespace TomLonghurst.RedisClient.Models
 
                     var bytesReceived = buffer.Length;
 
-                    buffer.CopyTo(bytes.Slice(0, (int) bytesReceived).Span);
+                    buffer.CopyTo(bytes.Slice(0, (int)bytesReceived).Span);
 
                     Pipe.Input.AdvanceTo(buffer.End);
 
@@ -127,8 +259,8 @@ namespace TomLonghurst.RedisClient.Models
                             Math.Min(ReadResult.Buffer.Length, byteSizeOfData - bytesReceived));
 
                         buffer
-                            .CopyTo(bytes.Slice((int) bytesReceived,
-                                (int) Math.Min(buffer.Length, byteSizeOfData - bytesReceived)).Span);
+                            .CopyTo(bytes.Slice((int)bytesReceived,
+                                (int)Math.Min(buffer.Length, byteSizeOfData - bytesReceived)).Span);
 
                         bytesReceived += buffer.Length;
 
@@ -155,6 +287,41 @@ namespace TomLonghurst.RedisClient.Models
             }
 
             throw new UnexpectedRedisResponseException($"Unexpected reply: {line}");
+        }
+
+        protected async ValueTask<ReadOnlySequence<byte>> ReadLine2()
+        {
+            var endOfLinePosition = ReadResult.Buffer.PositionOf((byte)'\n');
+            if (endOfLinePosition == null)
+            {
+                while (true)
+                {
+                    ReadResult = await Pipe.Input.ReadAsync();
+
+                    endOfLinePosition = ReadResult.Buffer.PositionOf((byte)'\n');
+
+                    if (endOfLinePosition == null)
+                    {
+                        Pipe.Input.AdvanceTo(ReadResult.Buffer.Start, ReadResult.Buffer.End);
+                    }
+                    else
+                    {
+                        break;
+                    }
+
+                    if (ReadResult.IsCompleted)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (endOfLinePosition == null)
+            {
+                throw new RedisDataException("Can't find EOL");
+            }
+
+            return ReadResult.Buffer.Slice(0, endOfLinePosition.Value);
         }
 
         protected async ValueTask<string> ReadLine()
@@ -184,7 +351,7 @@ namespace TomLonghurst.RedisClient.Models
             var line = buffer.Slice(0, buffer.Length - 2).AsString();
 
             LastAction = "Advancing Buffer to End of Line";
-            Pipe.Input.AdvanceTo(endOfLinePosition.Value, ReadResult.Buffer.End);
+            Pipe.Input.AdvanceTo(endOfLinePosition.Value);
 
             return line;
         }
@@ -208,7 +375,7 @@ namespace TomLonghurst.RedisClient.Models
     {
         private protected override async ValueTask<string> Process()
         {
-            return (await ReadData()).AsString();
+            return (await ReadData2()).AsString();
         }
     }
 
@@ -273,7 +440,7 @@ namespace TomLonghurst.RedisClient.Models
                 throw new UnexpectedRedisResponseException($"Error getting message count: {arrayWithCountLine}");
             }
 
-            var results = new byte [count][];
+            var results = new byte[count][];
             for (var i = 0; i < count; i++)
             {
                 // Refresh the pipe buffer before 'ReadData' method reads it
